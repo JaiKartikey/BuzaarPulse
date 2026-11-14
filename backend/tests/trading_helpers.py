@@ -42,7 +42,19 @@ class Rig:
 
     async def price(self, symbol: str, last: float, *, age: float = 0.0) -> None:
         """Publish a quote the way the stream processor would."""
-        quote = {"symbol": symbol, "last": last, "prev_close": last, "change_pct": 0.0, "ts": time.time() - age}
+        quote = {
+            "symbol": symbol,
+            "last": last,
+            "prev_close": last,
+            "change": 0.0,
+            "change_pct": 0.0,
+            "open": last,
+            "high": last,
+            "low": last,
+            "volume": 1000,
+            "ts": time.time() - age,
+            "bar": None,
+        }
         await self.bus.redis.set(self.bus.key(quote_key(symbol)), orjson.dumps(quote))
 
     async def buy(self, user_id: uuid.UUID, symbol: str, quantity: int, **kw: object) -> Order:
