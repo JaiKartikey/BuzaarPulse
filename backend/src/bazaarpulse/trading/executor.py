@@ -282,6 +282,10 @@ class Executor:
             for env in batch:
                 acks.setdefault(env.stream, []).append(env.id)
                 tick = Tick.from_wire(env.data)
+                # An old tick (the executor was down, or is catching up) must never fill an order:
+                # that would be trading at a price the market left behind.
+                if time.time() - tick.ts > self.settings.max_quote_age_seconds:
+                    continue
                 # Most ticks are for symbols nobody has an order on: skip them without touching the database.
                 if tick.symbol in self._open_symbols:
                     try:
