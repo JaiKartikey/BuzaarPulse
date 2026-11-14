@@ -22,8 +22,8 @@ from tests.conftest import make_settings
 
 
 def minute_start() -> float:
-    """The start of a recent minute, so candles land inside the store's query window."""
-    return (int(time.time()) // 60 - 5) * 60.0
+    """Start of a recent 5-minute bucket: inside the store's query window, and stable for 5m-candle assertions."""
+    return (int(time.time()) // 300 - 2) * 300.0
 
 
 async def drain(processor: StreamProcessor, bus: RedisBus, now: float) -> None:
