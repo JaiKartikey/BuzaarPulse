@@ -1,0 +1,80 @@
+[project]
+name = "bazaarpulse"
+version = "0.1.0"
+description = "Real-time market data pipeline, paper-trading engine and agentic AI research desk."
+authors = [{ name = "JaiKartikey" }]
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    # --- API ---------------------------------------------------------------
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "orjson>=3.10",
+    # --- Data --------------------------------------------------------------
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "redis>=5.0",
+    # --- Outbound I/O ------------------------------------------------------
+    "httpx>=0.27",
+    "websockets>=13",
+    "anthropic>=1.0",
+    # --- Auth --------------------------------------------------------------
+    "pyjwt>=2.9",
+    "argon2-cffi>=23.1",
+    # --- Observability -----------------------------------------------------
+    "prometheus-client>=0.20",
+    "structlog>=24.4",
+]
+
+[project.scripts]
+bazaarpulse = "bazaarpulse.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bazaarpulse"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S", "RUF"]
+ignore = [
+    "S101",   # assert is fine in tests and for invariants
+    "S311",   # the market simulator uses random on purpose; nothing here is cryptographic
+    "RUF001", # the rupee sign is intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+"alembic/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["bazaarpulse"]
