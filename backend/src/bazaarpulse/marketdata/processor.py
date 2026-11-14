@@ -12,6 +12,11 @@ acknowledged), so correctness comes from making every effect idempotent:
   in between, replay rebuilds the identical candle and upserts it again.
 
 Net effect: every tick counts exactly once, with no distributed transaction.
+
+Scaling out: ticks are split over partitions by symbol, and each partition is
+owned by one processor at a time through a lease (see ``bus/leases.py``). A
+processor that takes a partition over loads that partition's checkpoints and
+adopts the previous owner's unacknowledged ticks before reading new ones.
 """
 
 from __future__ import annotations
@@ -26,10 +31,12 @@ from decimal import Decimal
 from typing import Any
 
 import orjson
+from redis.exceptions import WatchError
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from bazaarpulse.bus import Envelope, RedisBus, topics
+from bazaarpulse.bus.leases import PartitionLeases
 from bazaarpulse.bus.redis_bus import stream_id_key
 from bazaarpulse.config import Settings
 from bazaarpulse.db import Database
@@ -88,12 +95,17 @@ class StreamProcessor:
         *,
         partitions: list[int] | None = None,
         consumer: str = "processor-0",
+        leases: PartitionLeases | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
         self.settings = settings
         self.consumer = consumer
-        self.partitions = partitions if partitions is not None else list(range(settings.tick_partitions))
+        # With leases, ownership is dynamic and starts empty. Without (tests, single process), it is fixed.
+        self.leases = leases
+        self.partitions = (
+            [] if leases else (partitions if partitions is not None else list(range(settings.tick_partitions)))
+        )
         self.tick_streams = [topics.ticks(p) for p in self.partitions]
         self.streams = [*self.tick_streams, topics.NEWS, topics.BARS]
         self.states: dict[str, SymbolState] = {}
@@ -115,36 +127,83 @@ class StreamProcessor:
     # --- Lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
-        for stream in self.streams:
+        every_stream = [*(topics.ticks(p) for p in range(self.settings.tick_partitions)), topics.NEWS, topics.BARS]
+        for stream in {*every_stream, *self.streams}:
             await self.bus.ensure_group(stream, GROUP, start_id="0")
         async with self.db.transaction() as session:
             await session.execute(text("SELECT ensure_candle_partitions(2)"))
             rows = (await session.execute(select(Instrument.symbol, Instrument.ref_price))).all()
         self._ref_prices = {symbol: float(ref) for symbol, ref in rows}
-        await self._load_checkpoints()
+        await self._load_checkpoints(list(self._ref_prices))
 
     async def run(self) -> None:
         await self.start()
-        # First, whatever we were handed before a crash but never acknowledged.
-        while pending := await self.bus.consume(
-            self.streams, GROUP, self.consumer, count=1000, block_ms=None, pending=True
-        ):
-            await self.handle(pending)
-        log.info("processor.live", consumer=self.consumer, streams=self.tick_streams)
-        while not self._stopping:
-            batch = await self.bus.consume(
-                self.streams, GROUP, self.consumer, count=2000, block_ms=self.settings.quote_conflate_ms
-            )
-            await self.handle(batch)
+        if self.leases is None:
+            await self._adopt_pending(self.streams, min_idle_ms=0)
+        log.info("processor.live", consumer=self.consumer, leased=self.leases is not None)
+        last_refresh = 0.0
+        try:
+            while not self._stopping:
+                if self.leases is not None and time.monotonic() - last_refresh > self.leases.ttl_ms / 3000:
+                    await self._sync_leases()
+                    last_refresh = time.monotonic()
+                batch = await self.bus.consume(
+                    self.streams, GROUP, self.consumer, count=2000, block_ms=self.settings.quote_conflate_ms
+                )
+                await self.handle(batch)
+        finally:
+            if self.leases is not None:
+                await self.leases.release_all()
+
+    async def _sync_leases(self) -> None:
+        assert self.leases is not None
+        acquired, lost = await self.leases.refresh()
+        for partition in lost:
+            self._drop(partition)
+        for partition in sorted(acquired):
+            await self._take_over(partition)
+        if acquired or lost:
+            log.info("processor.rebalanced", consumer=self.consumer, held=sorted(self.leases.held))
+
+    def _set_partitions(self, partitions: set[int]) -> None:
+        self.partitions = sorted(partitions)
+        self.tick_streams = [topics.ticks(p) for p in self.partitions]
+        self.streams = [*self.tick_streams, topics.NEWS, topics.BARS]
+
+    def _symbols_of(self, partition: int) -> list[str]:
+        total = self.settings.tick_partitions
+        return [s for s in self._ref_prices if topics.partition_for(s, total) == partition]
+
+    async def _take_over(self, partition: int) -> None:
+        """Become the owner: adopt the last owner's state and its unfinished work, then read new ticks."""
+        await self._load_checkpoints(self._symbols_of(partition))
+        self._set_partitions({*self.partitions, partition})
+        await self._adopt_pending([topics.ticks(partition)], min_idle_ms=0)
+
+    def _drop(self, partition: int) -> None:
+        """No longer the owner: forget this partition's state so a stale copy is never used again."""
+        for symbol in self._symbols_of(partition):
+            self.states.pop(symbol, None)
+            self._to_broadcast.discard(symbol)
+        self._set_partitions(set(self.partitions) - {partition})
+
+    async def _adopt_pending(self, streams: list[str], *, min_idle_ms: int) -> None:
+        """Process ticks that were delivered to some consumer but never acknowledged (it crashed mid-batch)."""
+        for stream in streams:
+            while claimed := await self.bus.claim_stale(
+                stream, GROUP, self.consumer, min_idle_ms=min_idle_ms, count=1000
+            ):
+                await self.handle(claimed)
+                if len(claimed) < 1000:
+                    break
 
     def stop(self) -> None:
         self._stopping = True
 
-    async def _load_checkpoints(self) -> None:
-        keys = [self.bus.key(_state_key(s)) for s in self._ref_prices]
-        if not keys:
+    async def _load_checkpoints(self, symbols: list[str]) -> None:
+        if not symbols:
             return
-        for raw in await self.bus.redis.mget(keys):
+        for raw in await self.bus.redis.mget([self.bus.key(_state_key(s)) for s in symbols]):
             if raw:
                 state = SymbolState.restore(orjson.loads(raw))
                 self.states[state.symbol] = state
@@ -194,7 +253,8 @@ class StreamProcessor:
             await self._write_news(news)
         if anomalies:
             await self._write_anomalies(anomalies)
-        await self._checkpoint_and_ack(touched, ack, applied)
+        if not await self._checkpoint_and_ack(touched, ack, applied):
+            return  # lost the lease mid-batch: the new owner will redo this work from its own checkpoint
 
         self._to_broadcast |= touched
         await self._broadcast_quotes(now)
@@ -210,19 +270,41 @@ class StreamProcessor:
             state = self.states[symbol] = SymbolState(symbol, prev_close=self._ref_prices.get(symbol, 0.0))
         return state
 
-    async def _checkpoint_and_ack(self, touched: set[str], ack: dict[str, list[str]], applied: int) -> None:
+    async def _checkpoint_and_ack(self, touched: set[str], ack: dict[str, list[str]], applied: int) -> bool:
+        """Save state and acknowledge the batch in one atomic step. False if this processor was fenced off."""
         if not touched and not ack:
-            return
-        pipe = self.bus.redis.pipeline(transaction=True)  # MULTI/EXEC: all or nothing
-        for symbol in touched:
-            state = self.states[symbol]
-            pipe.set(self.bus.key(_state_key(symbol)), orjson.dumps(state.snapshot()))
-            pipe.set(self.bus.key(quote_key(symbol)), orjson.dumps(state.quote()))
-        for stream, ids in ack.items():
-            pipe.xack(self.bus.key(stream), GROUP, *ids)
-        if applied:
-            pipe.hincrby(self.bus.key(STATS_KEY), "ticks_total", applied)
-        await pipe.execute()
+            return True
+        total = self.settings.tick_partitions
+        involved = {topics.partition_for(s, total) for s in touched} & set(self.partitions)
+        async with self.bus.redis.pipeline(transaction=True) as pipe:
+            try:
+                if self.leases is not None and involved:
+                    lease_keys = [self.leases.key(p) for p in sorted(involved)]
+                    # WATCH: if any of these keys changes before EXEC, Redis aborts the transaction.
+                    await pipe.watch(*lease_keys)
+                    owners = await pipe.mget(lease_keys)
+                    if any(
+                        o is None or (o.decode() if isinstance(o, bytes) else o) != self.leases.owner for o in owners
+                    ):
+                        raise WatchError("lease is no longer ours")
+                pipe.multi()  # type: ignore[no-untyped-call]  # MULTI/EXEC: all or nothing
+                for symbol in touched:
+                    state = self.states[symbol]
+                    pipe.set(self.bus.key(_state_key(symbol)), orjson.dumps(state.snapshot()))
+                    pipe.set(self.bus.key(quote_key(symbol)), orjson.dumps(state.quote()))
+                for stream, ids in ack.items():
+                    pipe.xack(self.bus.key(stream), GROUP, *ids)
+                if applied:
+                    pipe.hincrby(self.bus.key(STATS_KEY), "ticks_total", applied)
+                await pipe.execute()
+            except WatchError:
+                assert self.leases is not None
+                log.warning("processor.fenced", consumer=self.consumer, partitions=sorted(involved))
+                for partition in involved:
+                    self.leases.held.discard(partition)
+                    self._drop(partition)
+                return False
+        return True
 
     async def _broadcast_quotes(self, now: float) -> None:
         """Conflation: however many ticks arrive, the UI gets one update per symbol per interval."""
@@ -328,7 +410,8 @@ class StreamProcessor:
 
 
 async def run_processor(bus: RedisBus, db: Database, settings: Settings, consumer: str = "processor-0") -> None:
-    processor = StreamProcessor(bus, db, settings, consumer=consumer)
+    leases = PartitionLeases(bus.redis, bus.prefix, group=GROUP, owner=consumer, partitions=settings.tick_partitions)
+    processor = StreamProcessor(bus, db, settings, consumer=consumer, leases=leases)
     try:
         await processor.run()
     except asyncio.CancelledError:
