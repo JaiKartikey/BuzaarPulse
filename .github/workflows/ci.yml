@@ -114,13 +114,15 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
-      - name: Scan for known vulnerabilities (fails on fixable critical issues)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: bazaarpulse/backend:local
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+      # Fails on any critical or high vulnerability that has a fix available. Image scans look for
+      # vulnerable packages only; secret scanning belongs on the source, and in images it flags
+      # docstrings inside third-party libraries.
+      - name: Scan images for known vulnerabilities
+        run: |
+          for image in bazaarpulse/backend:local bazaarpulse/web:local; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.1 image \
+              --quiet --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$image"
+          done
 
       # The images that will ship, wired together exactly as in production, must come up and trade.
       - name: Smoke test the full stack
