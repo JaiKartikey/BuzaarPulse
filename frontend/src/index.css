@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/* Design tokens. Every colour in the app comes from here. */
+@theme {
+  --color-ink: #070a10;
+  --color-panel: #0e131c;
+  --color-raised: #141a26;
+  --color-line: #1e2636;
+  --color-line-strong: #2b3549;
+  --color-text: #e7ecf3;
+  --color-muted: #8793a6;
+  --color-faint: #5b6679;
+  --color-up: #2ee59d;
+  --color-down: #ff5d7c;
+  --color-accent: #8b7bff;
+  --color-ai: #45c8ff;
+  --color-warn: #ffb648;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers that change in place must not shift their neighbours: fixed-width digits everywhere. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+}
+
+.label {
+  color: var(--color-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A price cell flashes briefly in the direction it moved. */
+@keyframes flash-up {
+  from {
+    background: color-mix(in srgb, var(--color-up) 28%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+@keyframes flash-down {
+  from {
+    background: color-mix(in srgb, var(--color-down) 28%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+.flash-up {
+  animation: flash-up 0.7s ease-out;
+}
+.flash-down {
+  animation: flash-down 0.7s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.slide-in {
+  animation: slide-in 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up,
+  .flash-down,
+  .live-dot,
+  .slide-in {
+    animation: none;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
