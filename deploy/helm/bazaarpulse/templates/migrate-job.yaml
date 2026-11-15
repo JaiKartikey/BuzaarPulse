@@ -1,0 +1,27 @@
+# Runs before every install and upgrade. If the migration fails, the release stops
+# and the old pods keep serving: new code never starts against an old schema.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bp.name" . }}-migrate-{{ .Release.Revision }}
+  labels: {{- include "bp.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels: {{- include "bp.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.backend }}:{{ include "bp.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          {{- include "bp.backendEnv" . | nindent 10 }}
+          {{- include "bp.securityContext" . | nindent 10 }}

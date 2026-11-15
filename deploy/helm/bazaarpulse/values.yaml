@@ -1,0 +1,68 @@
+# Images. CI pushes both to GHCR tagged with the commit SHA; deploys pin that tag.
+image:
+  backend: ghcr.io/jaikartikey/bazaarpulse-backend
+  web: ghcr.io/jaikartikey/bazaarpulse-web
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Non-secret configuration, rendered into a ConfigMap.
+config:
+  ENV: prod
+  LOG_JSON: "true"
+  EMBEDDED_WORKERS: none
+  TICK_PARTITIONS: "4"
+  MARKET_PROVIDER: simulator
+  LLM_PROVIDER: auto
+  ANTHROPIC_MODEL: claude-opus-5-5
+  SEED_DEMO_USER: "false"
+
+# Secrets: DATABASE_URL, REDIS_URL, JWT_SECRET, and optionally ANTHROPIC_API_KEY,
+# GROQ_API_KEY, FINNHUB_API_KEY. Point at a Secret you manage (External Secrets,
+# Sealed Secrets, the cloud's secret manager). Never put real values in this file.
+existingSecret: bazaarpulse-secrets
+
+api:
+  replicas: 2
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 70 }
+
+# One Deployment per worker role. Each scales on its own.
+workers:
+  ingestor:
+    # Exactly one: two ingestors would publish every tick twice.
+    replicas: 1
+    strategy: Recreate
+    resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 256Mi } }
+  processor:
+    # Useful up to TICK_PARTITIONS; leases share partitions out and fail them over.
+    replicas: 2
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { memory: 512Mi } }
+  executor:
+    # Safe to run several: FOR UPDATE SKIP LOCKED gives each order to exactly one.
+    replicas: 2
+    resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { memory: 384Mi } }
+  agents:
+    replicas: 2
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+    autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 8, targetCPU: 60 }
+
+web:
+  replicas: 2
+  resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }
+
+ingress:
+  enabled: true
+  className: nginx
+  host: bazaarpulse.example.com
+  tls: { enabled: true, secretName: bazaarpulse-tls }
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # Long-lived WebSocket and event-stream connections.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+
+# Create a ServiceMonitor for the Prometheus Operator, if it is installed.
+serviceMonitor:
+  enabled: false

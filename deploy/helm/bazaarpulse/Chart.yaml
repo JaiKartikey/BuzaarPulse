@@ -1,0 +1,6 @@
+apiVersion: v2
+name: bazaarpulse
+description: Real-time market data, paper trading and an agentic research desk.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

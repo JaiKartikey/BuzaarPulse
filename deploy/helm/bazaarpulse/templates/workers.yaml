@@ -1,0 +1,61 @@
+{{- range $name, $w := .Values.workers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bp.name" $ }}-{{ $name }}
+  labels: {{- include "bp.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  {{- if not (and $w.autoscaling $w.autoscaling.enabled) }}
+  replicas: {{ $w.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $name }} }
+  strategy:
+    type: {{ $w.strategy | default "RollingUpdate" }}
+  template:
+    metadata:
+      labels: {{- include "bp.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      # Workers finish their current batch on SIGTERM; agent runs can take a while.
+      terminationGracePeriodSeconds: {{ if eq $name "agents" }}120{{ else }}30{{ end }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.backend }}:{{ include "bp.tag" $ }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: ["worker", {{ $name | quote }}]
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          {{- include "bp.backendEnv" $ | nindent 10 }}
+          # A worker that stops answering on its metrics port is wedged: restart it.
+          livenessProbe:
+            tcpSocket: { port: metrics }
+            periodSeconds: 15
+            failureThreshold: 4
+          resources: {{- toYaml $w.resources | nindent 12 }}
+          {{- include "bp.securityContext" $ | nindent 10 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+{{- if and $w.autoscaling $w.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bp.name" $ }}-{{ $name }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "bp.name" $ }}-{{ $name }} }
+  minReplicas: {{ $w.autoscaling.minReplicas }}
+  maxReplicas: {{ $w.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $w.autoscaling.targetCPU }} } }
+{{- end }}
+{{- end }}
