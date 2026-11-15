@@ -361,6 +361,7 @@ class AgentWorker:
 
     async def _sentinel_brief(self, recorder: RunRecorder, ctx: ToolContext, run: AgentRun) -> dict[str, Any]:
         anomaly = run.input.get("anomaly", {})
+        await asyncio.sleep(self.settings.sentinel_settle_seconds)
         a = {k: anomaly.get(k) for k in ("kind", "move_pct", "window_seconds", "zscore", "volume_ratio", "price")}
         prompt = (
             f"Symbol: {run.symbol}\n"

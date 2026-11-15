@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     quote_conflate_ms: int = 250
     sim_tick_interval_ms: int = 250
     sim_seed: int | None = None
-    sim_shock_per_hour: float = 6.0
+    sim_shock_per_hour: float = 3.0
     history_backfill_minutes: int = 6 * 60
 
     # --- Anomaly detection -------------------------------------------------
@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     agent_daily_token_budget: int = 400_000  # per user
     sentinel_enabled: bool = True
     sentinel_cooldown_seconds: int = 180  # per symbol
+    # The detector fires early in a move. Waiting a few seconds lets the move finish and the headline
+    # arrive, so the brief describes what happened rather than its first half-second.
+    sentinel_settle_seconds: float = 8.0
     sentinel_max_briefs_per_hour: int = 20  # hard cap on autonomous LLM spend
 
     @model_validator(mode="after")

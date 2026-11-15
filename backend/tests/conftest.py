@@ -51,6 +51,7 @@ def make_settings(**overrides: object) -> Settings:
         "embedded_workers": "none",
         "sim_seed": 7,
         "seed_demo_user": False,
+        "sentinel_settle_seconds": 0,
     }
     base.update(overrides)
     return Settings(_env_file=None, **base)  # type: ignore[arg-type]
