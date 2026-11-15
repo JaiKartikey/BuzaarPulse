@@ -15,5 +15,6 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 # Where the API lives is decided at deploy time, not build time: the same image runs in compose and in Kubernetes.
-ENV API_UPSTREAM=api:8000
+ENV API_UPSTREAM=api:8000 \
+    NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 EXPOSE 8080
