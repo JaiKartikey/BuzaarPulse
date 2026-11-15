@@ -260,11 +260,12 @@ class RunBody(BaseModel):
 @router.post("/agent/runs", status_code=status.HTTP_202_ACCEPTED)
 async def start_run(body: RunBody, user_id: UserId, c: C) -> dict[str, Any]:
     """Queue a run and return immediately; follow it on the events stream."""
-    if not await limiter(c).allow(f"runs.{user_id}", limit=12, window=60):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many agent requests; wait a moment")
     symbol = await _symbol(c, body.symbol) if body.symbol else None
     if body.kind == "war_room" and symbol is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "a war room needs a symbol")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "a war room needs a symbol")
+    # Checked after validation, so a malformed request does not use up the caller's allowance.
+    if not await limiter(c).allow(f"runs.{user_id}", limit=12, window=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many agent requests; wait a moment")
     run = await c.agents.create_run(kind=body.kind, user_id=user_id, input={"message": body.message}, symbol=symbol)
     return serialize_run(run)
 

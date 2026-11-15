@@ -79,19 +79,33 @@ class Hub:
         self.by_user: dict[uuid.UUID, set[Client]] = {}
 
     async def run(self) -> None:
-        """The single subscription feeding every connected client of this process."""
-        async for channel, data in self.bus.subscribe([topics.QUOTES, topics.PULSE], patterns=["user.*"]):
-            if channel == topics.QUOTES:
-                for client in self.clients:
-                    client.offer_quotes(data["quotes"])
-            elif channel == topics.PULSE:
-                for client in self.clients:
+        """The single subscription feeding every connected client of this process.
+
+        If Redis drops the connection, subscribe again: browsers stay connected and
+        simply see a short gap, instead of the feed dying until someone restarts the API.
+        """
+        while True:
+            try:
+                async for channel, data in self.bus.subscribe([topics.QUOTES, topics.PULSE], patterns=["user.*"]):
+                    self._dispatch(channel, data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("ws.subscription_lost", error=f"{type(e).__name__}: {e}")
+                await asyncio.sleep(1.0)
+
+    def _dispatch(self, channel: str, data: dict[str, Any]) -> None:
+        if channel == topics.QUOTES:
+            for client in self.clients:
+                client.offer_quotes(data["quotes"])
+        elif channel == topics.PULSE:
+            for client in self.clients:
+                client.offer_event(data)
+        else:
+            # user.<uuid>: private events go only to that user's sockets.
+            with contextlib.suppress(ValueError):
+                for client in self.by_user.get(uuid.UUID(channel.removeprefix("user.")), ()):
                     client.offer_event(data)
-            else:
-                # user.<uuid>: private events go only to that user's sockets.
-                with contextlib.suppress(ValueError):
-                    for client in self.by_user.get(uuid.UUID(channel.removeprefix("user.")), ()):
-                        client.offer_event(data)
 
     async def serve(self, socket: WebSocket, authenticate: Any) -> None:
         await socket.accept()
@@ -109,7 +123,11 @@ class Hub:
         self.clients.add(client)
         self.by_user.setdefault(user_id, set()).add(client)
         WS_CONNECTIONS.inc()
-        client.offer_event({"type": "ready"})
+        try:
+            await client._send({"type": "ready"})
+        except Exception:
+            self._forget(client)
+            return
         client.offer_quotes(list((await self.store.quotes()).values()))  # a full snapshot to start from
         # Two loops per connection, one per direction. Whichever ends first (the client
         # left, or it stopped accepting data) takes the other down with it.
@@ -122,11 +140,18 @@ class Hub:
             for task in loops:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-            self.clients.discard(client)
-            self.by_user.get(user_id, set()).discard(client)
-            WS_CONNECTIONS.dec()
+            self._forget(client)
             with contextlib.suppress(Exception):
                 await socket.close()
+
+    def _forget(self, client: Client) -> None:
+        self.clients.discard(client)
+        sockets = self.by_user.get(client.user_id)
+        if sockets is not None:
+            sockets.discard(client)
+            if not sockets:
+                del self.by_user[client.user_id]
+        WS_CONNECTIONS.dec()
 
     @staticmethod
     async def _receive(client: Client) -> None:
