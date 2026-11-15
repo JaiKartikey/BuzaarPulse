@@ -104,7 +104,9 @@ class MarketStore:
     async def candles(self, symbol: str, interval: str = "1m", limit: int = 300) -> list[dict[str, Any]]:
         width = INTERVALS[interval]
         limit = max(1, min(limit, 1000))
-        since = datetime.now(UTC) - timedelta(seconds=width * (limit + 1))
+        # Reach back at least a week: markets close overnight and on weekends, and a chart should still
+        # show the previous sessions. The bound keeps the scan to a couple of monthly partitions.
+        since = datetime.now(UTC) - max(timedelta(seconds=width * (limit + 1)), timedelta(days=7))
         async with self.db.session() as session:
             rows = (
                 await session.execute(

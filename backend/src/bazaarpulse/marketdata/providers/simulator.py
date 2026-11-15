@@ -76,6 +76,7 @@ class SimulatedMarket:
         tick_interval: float = 0.25,
         shocks_per_hour: float = 6.0,
         start_prices: dict[str, float] | None = None,
+        prev_closes: dict[str, float] | None = None,
     ) -> None:
         self.specs = {s.symbol: s for s in specs}
         self.rng = random.Random(seed)
@@ -83,6 +84,10 @@ class SimulatedMarket:
         self.shocks_per_hour = shocks_per_hour
         self.prices = {s.symbol: (start_prices or {}).get(s.symbol, float(s.ref_price)) for s in specs}
         self.anchors = dict(self.prices)
+        # Like a real feed, every tick carries the previous session's close, so "change today" is
+        # right from the first tick and stays right across restarts.
+        self.prev_close = {s.symbol: (prev_closes or {}).get(s.symbol, self.prices[s.symbol]) for s in specs}
+        self._day: int | None = None
         self.sectors = sorted({s.sector for s in specs})
         self._shocks: dict[str, _Shock] = {}
         self.pending_news: list[NewsItem] = []
@@ -108,6 +113,11 @@ class SimulatedMarket:
         """Advance the market by one interval and return the trades that printed."""
         rng, dt = self.rng, self.dt
         sigma = SIGMA_PER_SQRT_SECOND * math.sqrt(dt)
+
+        day = int(now // 86_400)
+        if self._day is not None and day != self._day:
+            self.prev_close = dict(self.prices)  # a new session: yesterday's last price is today's reference
+        self._day = day
 
         # Shocks arrive as a Poisson process: each step has a small, equal chance of one.
         if self.shocks_per_hour and rng.random() < self.shocks_per_hour / 3600 * dt:
@@ -141,7 +151,7 @@ class SimulatedMarket:
                 tick_size = float(spec.tick_size)
                 printed = max(tick_size, round(price / tick_size) * tick_size)
                 size = max(1, int(rng.lognormvariate(4.2, 1.0) * (4 if shock else 1)))
-                ticks.append(Tick(symbol, round(printed, 4), size, now, float(spec.ref_price)))
+                ticks.append(Tick(symbol, round(printed, 4), size, now, round(self.prev_close[symbol], 2)))
         return ticks
 
     def history(self, end: float, minutes: int, step_seconds: float = 5.0) -> list[Bar]:
@@ -150,6 +160,8 @@ class SimulatedMarket:
         Advances the market itself, so live trading continues from where history ends.
         """
         live_dt, self.dt = self.dt, step_seconds
+        # History is calmer than the live demo: a third of the shocks, so prices arrive near where they started.
+        live_shocks, self.shocks_per_hour = self.shocks_per_hour, self.shocks_per_hour / 3
         bars: dict[tuple[str, int], Bar] = {}
         start = (int(end) // BAR_SECONDS - minutes) * BAR_SECONDS
         t = float(start)
@@ -163,7 +175,8 @@ class SimulatedMarket:
                     bar.add(tick.price, tick.size * int(step_seconds / live_dt))
                 t += step_seconds
         finally:
-            self.dt = live_dt
+            self.dt, self.shocks_per_hour = live_dt, live_shocks
+            self.pending_news.clear()  # headlines for moves that are already history are not news
         return sorted(bars.values(), key=lambda b: (b.start, b.symbol))
 
 
@@ -178,9 +191,15 @@ class SimulatorProvider:
         tick_interval: float = 0.25,
         shocks_per_hour: float = 6.0,
         start_prices: dict[str, float] | None = None,
+        prev_closes: dict[str, float] | None = None,
     ) -> None:
         self.market = SimulatedMarket(
-            specs, seed=seed, tick_interval=tick_interval, shocks_per_hour=shocks_per_hour, start_prices=start_prices
+            specs,
+            seed=seed,
+            tick_interval=tick_interval,
+            shocks_per_hour=shocks_per_hour,
+            start_prices=start_prices,
+            prev_closes=prev_closes,
         )
         self.interval = tick_interval
         self._closed = False

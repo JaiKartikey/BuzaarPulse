@@ -96,8 +96,13 @@ async def run_ingestor(c: Container) -> None:
     # A restarted simulator continues from the last published prices instead of jumping back to its start.
     symbols = [spec.symbol for spec in universe_for(c.settings.market_provider)]
     raw = await c.redis.mget([c.bus.key(quote_key(s)) for s in symbols])
-    last = {s: orjson.loads(r)["last"] for s, r in zip(symbols, raw, strict=True) if r}
-    await Ingestor(build_provider(c.settings, start_prices=last or None), c.bus, c.settings).run()
+    quotes = {s: orjson.loads(r) for s, r in zip(symbols, raw, strict=True) if r}
+    provider = build_provider(
+        c.settings,
+        start_prices={s: q["last"] for s, q in quotes.items()} or None,
+        prev_closes={s: q["prev_close"] for s, q in quotes.items()} or None,
+    )
+    await Ingestor(provider, c.bus, c.settings).run()
 
 
 async def run_stream_processor(c: Container) -> None:

@@ -20,7 +20,7 @@ from bazaarpulse.marketdata.indicators import stdev
 from bazaarpulse.marketdata.types import AnomalyEvent, Tick
 
 LOOKBACK_BUCKETS = 6  # a move is measured over this many buckets (30 s at the default size)
-MIN_HISTORY = 20  # buckets of history needed before judging anything
+MIN_HISTORY = 12  # buckets of history (one minute at the default size) needed before judging anything
 
 
 @dataclass(slots=True)

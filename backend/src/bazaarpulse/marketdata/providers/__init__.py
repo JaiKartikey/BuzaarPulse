@@ -10,7 +10,11 @@ from bazaarpulse.marketdata.instruments import universe_for
 from bazaarpulse.marketdata.providers.base import MarketDataProvider
 
 
-def build_provider(settings: Settings, start_prices: dict[str, float] | None = None) -> MarketDataProvider:
+def build_provider(
+    settings: Settings,
+    start_prices: dict[str, float] | None = None,
+    prev_closes: dict[str, float] | None = None,
+) -> MarketDataProvider:
     specs = universe_for(settings.market_provider)
     if settings.market_provider == "finnhub":
         from bazaarpulse.marketdata.providers.finnhub import FinnhubProvider
@@ -30,6 +34,7 @@ def build_provider(settings: Settings, start_prices: dict[str, float] | None = N
         tick_interval=settings.sim_tick_interval_ms / 1000,
         shocks_per_hour=settings.sim_shock_per_hour,
         start_prices=start_prices,
+        prev_closes=prev_closes,
     )
 
 
