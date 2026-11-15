@@ -1,0 +1,61 @@
+# Alerts are written about symptoms a user would feel, with the "for" long enough to ignore a blip.
+groups:
+  - name: pipeline
+    rules:
+      - alert: MarketDataStalled
+        expr: sum(rate(bp_ticks_processed_total[1m])) == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: No ticks have been processed for 2 minutes.
+          description: Charts and quotes are frozen. Check the ingestor's feed connection, then the processor's partition leases.
+
+      - alert: TickBacklogGrowing
+        expr: sum(bp_stream_lag_messages{group="processor"}) > 5000
+        for: 3m
+        labels: { severity: page }
+        annotations:
+          summary: The processors are falling behind the tick stream.
+          description: Quotes are getting stale. Add processor replicas (up to the partition count) or raise TICK_PARTITIONS.
+
+      - alert: PipelineLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(bp_pipeline_latency_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: p95 tick-to-quote latency is above one second.
+
+  - name: trading
+    rules:
+      - alert: OrdersNotFilling
+        expr: sum(rate(bp_orders_total{status="open"}[5m])) > 0 and sum(rate(bp_fills_total[5m])) == 0
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: Orders are being accepted but none are filling.
+          description: The executor is probably down, or the tick stream it reads has stalled.
+
+  - name: api
+    rules:
+      - alert: ApiErrorRateHigh
+        expr: sum(rate(bp_http_requests_total{status=~"5.."}[5m])) / sum(rate(bp_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: More than 2% of API requests are failing with a server error.
+
+  - name: agents
+    rules:
+      - alert: LlmFailureRateHigh
+        expr: sum(rate(bp_llm_requests_total{outcome="error"}[10m])) / sum(rate(bp_llm_requests_total[10m])) > 0.2
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: More than 20% of model calls are failing.
+
+      - alert: LlmSpendHigh
+        expr: sum(increase(bp_llm_cost_usd_total[1h])) > 5
+        labels: { severity: ticket }
+        annotations:
+          summary: Estimated model spend passed $5 in the last hour.
+          description: Check the sentinel's hourly cap and the per-user token budgets.
