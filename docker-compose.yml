@@ -72,6 +72,9 @@ services:
   api:
     <<: *backend
     command: ["api"]
+    environment:
+      <<: *backend-env
+      WEB_CONCURRENCY: "${API_PROCESSES:-3}"
     ports:
       - "8000:8000"
     healthcheck:

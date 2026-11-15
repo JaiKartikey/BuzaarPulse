@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import signal
 from pathlib import Path
 
@@ -69,6 +70,9 @@ def main() -> None:
     api.add_argument("--host", default="0.0.0.0")  # noqa: S104 - a server in a container must listen on all interfaces
     api.add_argument("--port", type=int, default=8000)
     api.add_argument("--reload", action="store_true")
+    # Processes per pod. Each has its own event loop and its own Redis subscription.
+    # In Kubernetes prefer more pods; inside one big container, more processes.
+    api.add_argument("--workers", type=int, default=int(os.environ.get("WEB_CONCURRENCY", "1")))
     worker = commands.add_parser("worker", help="run one background worker")
     worker.add_argument("name", choices=sorted(WORKERS))
     worker.add_argument("--metrics-port", type=int, default=9100)
@@ -79,7 +83,14 @@ def main() -> None:
     if args.command == "api":
         import uvicorn
 
-        uvicorn.run("bazaarpulse.api.app:create_app", factory=True, host=args.host, port=args.port, reload=args.reload)
+        uvicorn.run(
+            "bazaarpulse.api.app:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            workers=None if args.reload else args.workers,
+        )
     elif args.command == "worker":
         asyncio.run(_worker(args.name, args.metrics_port))
     elif args.command == "migrate":
