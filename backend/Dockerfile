@@ -31,7 +31,14 @@ RUN --mount=type=cache,target=/root/.cache/uv --mount=type=secret,id=ca,required
 
 # --- Runtime stage: no compilers, no package manager, no root -------------------------
 FROM python:3.13-slim AS runtime
-RUN groupadd --system --gid 10001 app \
+# Patch OS packages, and remove pip: the app never installs anything at runtime, and pip's
+# vendored copies of urllib3, msgpack and setuptools were the image's only Python CVEs.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -m pip uninstall -y pip \
+ && rm -rf /usr/local/lib/python3.13/ensurepip \
+ && groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
